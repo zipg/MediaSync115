@@ -189,6 +189,20 @@ def sanitize_folder_name(value: str, *, fallback: str = "未分类") -> str:
     return text or fallback
 
 
+def resolve_root_folder_name(raw: dict[str, Any], key: str, default: str) -> str:
+    """解析归档一级根目录名（movie_root / tv_root）。
+
+    支持三种情况：
+    - 配置里没有该键：沿用默认值，保持历史行为不变；
+    - 显式传入空字符串：扁平模式，分类目录直接位于输出目录下，不再额外套一层根目录；
+    - 其他取值：清洗非法字符后使用。
+    """
+    if key not in raw or raw.get(key) is None:
+        return default
+    text = INVALID_FOLDER_CHARS.sub(" ", str(raw.get(key))).strip()
+    return text
+
+
 def _normalize_country_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -285,13 +299,11 @@ def normalize_archive_subdirs(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
 
-    movie_root = sanitize_folder_name(
-        str(raw.get("movie_root") or DEFAULT_ARCHIVE_SUBDIRS["movie_root"]),
-        fallback=DEFAULT_ARCHIVE_SUBDIRS["movie_root"],
+    movie_root = resolve_root_folder_name(
+        raw, "movie_root", DEFAULT_ARCHIVE_SUBDIRS["movie_root"]
     )
-    tv_root = sanitize_folder_name(
-        str(raw.get("tv_root") or DEFAULT_ARCHIVE_SUBDIRS["tv_root"]),
-        fallback=DEFAULT_ARCHIVE_SUBDIRS["tv_root"],
+    tv_root = resolve_root_folder_name(
+        raw, "tv_root", DEFAULT_ARCHIVE_SUBDIRS["tv_root"]
     )
     movie_categories = _normalize_category_list(
         raw.get("movie_categories"),

@@ -56,11 +56,19 @@ class ArchiveConfigRequest(BaseModel):
     offline_monitor_interval_minutes: Optional[int] = None
     archive_subdirs: Optional[dict[str, Any]] = Field(
         default=None,
-        description="归档二级目录配置（电影/剧集分类文件夹）",
+        description="归档二级目录配置（电影/剧集分类文件夹）；root 留空表示扁平模式",
     )
     archive_naming: Optional[dict[str, Any]] = Field(
         default=None,
         description="归档命名格式配置（文件名/文件夹名模板）",
+    )
+    archive_skip_patterns: Optional[list[str]] = Field(
+        default=None,
+        description="归档忽略规则（正则字符串列表），命中的文件保持原位不归档",
+    )
+    archive_skip_catalog_codes: Optional[bool] = Field(
+        default=None,
+        description="是否跳过疑似片商番号（如 DASS-776 / ipx00722）的文件",
     )
 
     class Config:

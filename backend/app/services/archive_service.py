@@ -54,6 +54,30 @@ ARCHIVE_IDENTIFY_CONCURRENCY = 8
 # 同一目标目录下批量移动的文件数（115 fs_move 支持多 fid）
 ARCHIVE_MOVE_BATCH_SIZE = 20
 
+# 片商番号样式（如 DASS-776 / ipx00722 / START-446）。这类文件一般不是影视资源，
+# 一旦被 TMDB 模糊匹配就会被错误命名并搬进媒体库，因此默认跳过归档、保持原位。
+ARCHIVE_CATALOG_CODE_RE = re.compile(r"^[A-Za-z]{2,7}[-_ ]?\d{2,5}(?:[-_ ].*)?$")
+# 判断前先去掉扩展名与括号/画质等技术噪音
+ARCHIVE_CODE_NOISE_RE = re.compile(
+    r"(\[[^\]]*\]|\([^)]*\)|（[^）]*）|【[^】]*】|"
+    r"\b(?:4k|8k|1080p|720p|2160p|x264|x265|hevc|avc|aac|ddp|hdr10?|dolby|\bdv\b|"
+    r"remux|web-?dl|bluray|uncensored|leak|ch)\b)",
+    re.IGNORECASE,
+)
+
+
+def looks_like_catalog_code(value: str) -> bool:
+    """判断名称是否像片商番号而非影视标题（用于避免误归档）。"""
+    text = str(value or "").strip()
+    if not text:
+        return False
+    stem = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", text).strip()
+    if not stem:
+        return False
+    stem = ARCHIVE_CODE_NOISE_RE.sub(" ", stem).strip()
+    stem = re.sub(r"\s+", " ", stem)
+    return bool(ARCHIVE_CATALOG_CODE_RE.match(stem))
+
 VIDEO_EXTENSIONS = {
     ".mkv",
     ".mp4",
@@ -600,8 +624,14 @@ class ArchiveService:
 
                 # 阶段二：优先 file_fid↔TMDB 绑定，再回退文件名搜 TMDB
                 identify_tasks = []
+                skip_reasons: dict[str, str] = {}
                 for item in video_items:
                     parsed = self.parse_media_filename(item["name"])
+                    reason = self._archive_skip_reason(item, parsed)
+                    if reason:
+                        # 命中忽略规则/疑似番号：不参与 TMDB 识别，保持原位
+                        skip_reasons[str(item.get("fid") or "")] = reason
+                        continue
                     identify_tasks.append((item, parsed))
 
                 binding_map = await transfer_file_binding_service.get_by_file_fids(
@@ -704,15 +734,16 @@ class ArchiveService:
                 for item in video_items:
                     self._raise_if_scan_cancel_requested()
                     fid = str(item.get("fid", ""))
-                    identify_info = identified_video_map.get(fid)
-                    if not identify_info:
-                        continue
 
-                    skip_reason = tv_skip_map.get(fid)
+                    skip_reason = skip_reasons.get(fid) or tv_skip_map.get(fid)
                     if skip_reason:
                         result = self._build_archive_skip_result(item, skip_reason)
                         summary["items"].append(result)
                         summary["skipped"] += 1
+                        continue
+
+                    identify_info = identified_video_map.get(fid)
+                    if not identify_info:
                         continue
 
                     plan = await self._prepare_identified(
@@ -1032,6 +1063,37 @@ class ArchiveService:
             "source_filename": item.get("name", ""),
             "message": message,
         }
+
+    def _archive_skip_reason(
+        self,
+        item: dict[str, Any],
+        parsed: dict[str, Any] | None = None,
+    ) -> str:
+        """按用户忽略规则与内置番号识别判断是否跳过归档（跳过即保持原位）。"""
+        name = str(item.get("name") or "")
+        relative_path = str(item.get("relative_path") or "")
+        folder_name = (
+            relative_path.rsplit("/", 2)[-2] if relative_path.count("/") >= 1 else ""
+        )
+        parsed_title = str((parsed or {}).get("title") or "")
+        candidates = [name, parsed_title, folder_name]
+
+        for pattern in runtime_settings_service.get_archive_skip_patterns():
+            try:
+                regex = re.compile(pattern, re.IGNORECASE)
+            except re.error:
+                continue
+            if any(
+                value and regex.search(value)
+                for value in candidates + [relative_path]
+            ):
+                return f"命中归档忽略规则：{pattern}"
+
+        if runtime_settings_service.get_archive_skip_catalog_codes() and any(
+            looks_like_catalog_code(value) for value in candidates
+        ):
+            return "疑似片商番号，已跳过归档"
+        return ""
 
     async def _get_target_folder_snapshot(
         self,
@@ -1558,8 +1620,12 @@ class ArchiveService:
 
         subdirs = self._get_archive_subdirs()
         root_names = {
-            str(subdirs.get("tv_root") or "剧集").strip().casefold(),
-            str(subdirs.get("movie_root") or "电影").strip().casefold(),
+            name
+            for name in (
+                str(subdirs.get("tv_root") or "").strip().casefold(),
+                str(subdirs.get("movie_root") or "").strip().casefold(),
+            )
+            if name
         }
 
         season_cids: list[str] = []
@@ -3027,7 +3093,7 @@ class ArchiveService:
         naming: dict[str, str] | None = None,
     ) -> str:
         if media_type == "tv":
-            tv_root = str(subdirs.get("tv_root") or "剧集")
+            tv_root = str(subdirs.get("tv_root") or "").strip()
             season_num = int(season or 1)
             season_folder = render_archive_name(
                 naming,
@@ -3037,9 +3103,16 @@ class ArchiveService:
             )
             if not season_folder:
                 season_folder = f"第{season_num}季"
-            return f"{tv_root}/{category_name}/{title_folder}/{season_folder}"
-        movie_root = str(subdirs.get("movie_root") or "电影")
-        return f"{movie_root}/{category_name}/{title_folder}"
+            # 扁平模式：tv_root 留空时，分类目录直接位于输出目录下
+            return "/".join(
+                part
+                for part in (tv_root, category_name, title_folder, season_folder)
+                if part
+            )
+        movie_root = str(subdirs.get("movie_root") or "").strip()
+        return "/".join(
+            part for part in (movie_root, category_name, title_folder) if part
+        )
 
     async def _cached_get_or_create_folder(
         self,
@@ -3067,14 +3140,17 @@ class ArchiveService:
         subdirs: dict[str, Any] | None = None,
     ) -> str:
         subdir_config = normalize_archive_subdirs(subdirs)
-        movie_root = str(subdir_config.get("movie_root") or "电影")
+        movie_root = str(subdir_config.get("movie_root") or "").strip()
         cache_key = ("movie", str(root_cid), movie_root, str(region), str(title_folder))
         if folder_cache and cache_key in folder_cache:
             return folder_cache[cache_key]
 
-        movies_cid = await self._cached_get_or_create_folder(
-            pan115, root_cid, movie_root, folder_cache
-        )
+        # 扁平模式：movie_root 留空时，分类目录直接建立在输出目录下
+        movies_cid = root_cid
+        if movie_root:
+            movies_cid = await self._cached_get_or_create_folder(
+                pan115, root_cid, movie_root, folder_cache
+            )
         region_cid = await self._cached_get_or_create_folder(
             pan115, movies_cid, region, folder_cache
         )
@@ -3097,7 +3173,7 @@ class ArchiveService:
         naming: dict[str, str] | None = None,
     ) -> str:
         subdir_config = normalize_archive_subdirs(subdirs)
-        tv_root = str(subdir_config.get("tv_root") or "剧集")
+        tv_root = str(subdir_config.get("tv_root") or "").strip()
         season = int(parsed.get("season") or 1)
         season_dir = render_archive_name(
             naming,
@@ -3118,9 +3194,12 @@ class ArchiveService:
         if folder_cache and cache_key in folder_cache:
             return folder_cache[cache_key]
 
-        tv_cid = await self._cached_get_or_create_folder(
-            pan115, root_cid, tv_root, folder_cache
-        )
+        # 扁平模式：tv_root 留空时，分类目录直接建立在输出目录下
+        tv_cid = root_cid
+        if tv_root:
+            tv_cid = await self._cached_get_or_create_folder(
+                pan115, root_cid, tv_root, folder_cache
+            )
         genre_cid = await self._cached_get_or_create_folder(
             pan115, tv_cid, genre, folder_cache
         )

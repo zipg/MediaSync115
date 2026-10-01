@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import secrets
 import hashlib
 from pathlib import Path
@@ -215,6 +216,8 @@ class RuntimeSettingsService:
             "offline_monitor_interval_minutes": 3,
             "archive_subdirs": DEFAULT_ARCHIVE_SUBDIRS,
             "archive_naming": DEFAULT_ARCHIVE_NAMING,
+            "archive_skip_patterns": [],
+            "archive_skip_catalog_codes": True,
             "strm_enabled": False,
             "strm_output_dir": "",
             "strm_base_url": "",
@@ -1207,6 +1210,46 @@ class RuntimeSettingsService:
         except ValueError:
             return normalize_archive_naming(DEFAULT_ARCHIVE_NAMING)
 
+    def get_archive_skip_patterns(self) -> list[str]:
+        """归档忽略规则（正则字符串列表）。"""
+        raw = self._data.get("archive_skip_patterns")
+        if not isinstance(raw, list):
+            return []
+        patterns: list[str] = []
+        for item in raw:
+            text = str(item or "").strip()
+            if text and text not in patterns:
+                patterns.append(text)
+        return patterns
+
+    def get_archive_skip_catalog_codes(self) -> bool:
+        """是否跳过疑似片商番号（如 DASS-776 / ipx00722）的文件。"""
+        return bool(self._data.get("archive_skip_catalog_codes", True))
+
+    @staticmethod
+    def _normalize_archive_skip_patterns(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw_items = re.split(r"[\n,]+", value)
+        elif isinstance(value, (list, tuple, set)):
+            raw_items = list(value)
+        else:
+            raise ValueError("archive_skip_patterns 必须是字符串或字符串数组")
+
+        patterns: list[str] = []
+        for item in raw_items:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            try:
+                re.compile(text)
+            except re.error as exc:
+                raise ValueError(f"忽略规则不是合法正则：{text}（{exc}）") from exc
+            if text not in patterns:
+                patterns.append(text)
+        return patterns
+
     def get_archive_config(self) -> dict[str, Any]:
         return {
             "archive_enabled": self.get_archive_enabled(),
@@ -1222,6 +1265,8 @@ class RuntimeSettingsService:
             "strm_auto_after_archive": self.get_strm_auto_after_archive(),
             "archive_subdirs": self.get_archive_subdirs(),
             "archive_naming": self.get_archive_naming(),
+            "archive_skip_patterns": self.get_archive_skip_patterns(),
+            "archive_skip_catalog_codes": self.get_archive_skip_catalog_codes(),
         }
 
     def get_strm_enabled(self) -> bool:
@@ -1463,6 +1508,17 @@ class RuntimeSettingsService:
         if "archive_naming" in payload and payload["archive_naming"] is not None:
             self._data["archive_naming"] = normalize_archive_naming(
                 payload["archive_naming"]
+            )
+        if "archive_skip_patterns" in payload:
+            self._data["archive_skip_patterns"] = self._normalize_archive_skip_patterns(
+                payload["archive_skip_patterns"]
+            )
+        if (
+            "archive_skip_catalog_codes" in payload
+            and payload["archive_skip_catalog_codes"] is not None
+        ):
+            self._data["archive_skip_catalog_codes"] = bool(
+                payload["archive_skip_catalog_codes"]
             )
 
         self._save()
