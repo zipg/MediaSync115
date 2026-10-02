@@ -92,8 +92,20 @@ def test_catalog_code_detection():
     assert looks_like_catalog_code("SONE-446.mp4") is True
     assert looks_like_catalog_code("ipx00722_4k60fps.mp4") is True
     assert looks_like_catalog_code("START-446.mp4") is True
+    assert looks_like_catalog_code("start-001.mp4") is True
     assert looks_like_catalog_code("hmn00676.mp4") is True
     assert looks_like_catalog_code("MADV-565.mp4") is True
+    # 单字母前缀也属于番号/杂项命名（如 F02 / Y115）
+    assert looks_like_catalog_code("F02.mp4") is True
+    assert looks_like_catalog_code("Y115.mp4") is True
+    assert looks_like_catalog_code("Y12.mp4") is True
+
+
+def test_codec_token_not_treated_as_catalog_code():
+    """x265/h264 这类编码标签文件名不应被当成番号跳过。"""
+    assert looks_like_catalog_code("x265.mp4") is False
+    assert looks_like_catalog_code("h264.mp4") is False
+    assert looks_like_catalog_code("HEVC.mkv") is False
 
 
 def test_normal_media_not_treated_as_catalog_code():

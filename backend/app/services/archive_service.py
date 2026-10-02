@@ -54,9 +54,12 @@ ARCHIVE_IDENTIFY_CONCURRENCY = 8
 # 同一目标目录下批量移动的文件数（115 fs_move 支持多 fid）
 ARCHIVE_MOVE_BATCH_SIZE = 20
 
-# 片商番号样式（如 DASS-776 / ipx00722 / START-446）。这类文件一般不是影视资源，
+# 片商番号样式（如 DASS-776 / ipx00722 / START-446 / F02 / Y115）。这类文件一般不是影视资源，
 # 一旦被 TMDB 模糊匹配就会被错误命名并搬进媒体库，因此默认跳过归档、保持原位。
-ARCHIVE_CATALOG_CODE_RE = re.compile(r"^[A-Za-z]{2,7}[-_ ]?\d{2,5}(?:[-_ ].*)?$")
+ARCHIVE_CATALOG_CODE_RE = re.compile(r"^[A-Za-z]{1,7}[-_ ]?\d{2,5}(?:[-_ ].*)?$")
+# 形如 x265 / h264 的编码标签文件名不算番号
+ARCHIVE_CODEC_TOKENS = frozenset({"x264", "x265", "h264", "h265", "av1", "hevc", "avc"})
+
 # 判断前先去掉扩展名与括号/画质等技术噪音
 ARCHIVE_CODE_NOISE_RE = re.compile(
     r"(\[[^\]]*\]|\([^)]*\)|（[^）]*）|【[^】]*】|"
@@ -76,6 +79,8 @@ def looks_like_catalog_code(value: str) -> bool:
         return False
     stem = ARCHIVE_CODE_NOISE_RE.sub(" ", stem).strip()
     stem = re.sub(r"\s+", " ", stem)
+    if stem.casefold() in ARCHIVE_CODEC_TOKENS:
+        return False
     return bool(ARCHIVE_CATALOG_CODE_RE.match(stem))
 
 VIDEO_EXTENSIONS = {
