@@ -36,6 +36,7 @@ from app.utils.cloud_filename import (
     strip_cloud_duplicate_suffix,
 )
 from app.utils.name_parser import name_parser
+from app.utils.archive_title_guard import title_mismatch
 from app.utils.media_title_cleanup import clean_archive_display_title
 
 from app.core.timezone_utils import beijing_now
@@ -708,6 +709,14 @@ class ArchiveService:
                     if not identify_info:
                         continue
 
+                    guard_reason = self._title_guard_reason(item, identify_info)
+                    if guard_reason:
+                        # TMDB 匹配标题与源文件名明显不符（张冠李戴）：不搬动，转人工确认
+                        result = self._build_archive_skip_result(item, guard_reason)
+                        summary["items"].append(result)
+                        summary["skipped"] += 1
+                        continue
+
                     skip_reason = tv_skip_map.get(fid)
                     if skip_reason:
                         result = self._build_archive_skip_result(item, skip_reason)
@@ -1032,6 +1041,14 @@ class ArchiveService:
             "source_filename": item.get("name", ""),
             "message": message,
         }
+
+    @staticmethod
+    def _title_guard_reason(item: dict[str, Any], identify_info: dict[str, Any]) -> str:
+        """标题体检：TMDB 匹配标题与源文件名明显不符时返回原因（不搬动，转人工）。"""
+        matched = identify_info.get("matched") or {}
+        title = str(matched.get("title") or "")
+        mismatch, reason = title_mismatch(str(item.get("name") or ""), title)
+        return reason if mismatch else ""
 
     async def _get_target_folder_snapshot(
         self,
