@@ -3905,6 +3905,8 @@ class SubscriptionService:
                         source,
                         "精准转存",
                         getattr(sub, "poster_path", None),
+                        source_id=getattr(record, "resource_source_id", "") or "",
+                        resource_url=getattr(record, "resource_url", "") or "",
                     )
                     archive_needed = True
                     await self._create_step_log(
@@ -4059,6 +4061,8 @@ class SubscriptionService:
                         source,
                         "分享转存",
                         getattr(sub, "poster_path", None),
+                        source_id=getattr(record, "resource_source_id", "") or "",
+                        resource_url=getattr(record, "resource_url", "") or "",
                     )
                     archive_needed = True
                     await self._create_step_log(
@@ -4148,6 +4152,8 @@ class SubscriptionService:
                         source,
                         "已在网盘（跳过重复）",
                         getattr(sub, "poster_path", None),
+                        source_id=getattr(record, "resource_source_id", "") or "",
+                        resource_url=getattr(record, "resource_url", "") or "",
                     )
                     await self._create_step_log(
                         db,
@@ -5081,6 +5087,8 @@ class SubscriptionService:
         source: str,
         method: str,
         poster_path: str | None = None,
+        source_id: str = "",
+        resource_url: str = "",
     ) -> None:
         """订阅任务中网盘转存成功（含已在网盘跳过）时通过 TG Bot 推送。"""
         import logging
@@ -5094,11 +5102,70 @@ class SubscriptionService:
                 "<b>订阅 · 转存成功</b>",
                 f"订阅：{escape(sub_title)}",
                 f"资源：{escape(resource_name)}",
-                f"来源：{escape(source)}　方式：{escape(method)}",
+                f"来源：{escape(SubscriptionService._describe_source(source, source_id, resource_url))}　方式：{escape(method)}",
             ]
             await tg_bot_notify("\n".join(lines), poster_path=poster_path)
         except Exception:
             logger.warning("订阅转存 TG 通知发送失败", exc_info=True)
+
+    # 内部来源标识 → 可读轮次文案
+    _SOURCE_ROUND_LABELS = {
+        "new": "首轮新资源",
+        "new_fallback": "首轮补充搜索",
+        "retry": "重试轮",
+        "retry_fallback": "重试轮补充搜索",
+        "manual": "手动",
+    }
+
+    @staticmethod
+    def _describe_source(
+        source: str, source_id: str = "", resource_url: str = ""
+    ) -> str:
+        """把内部来源标识换成「真实资源站 · 承载方式 · 轮次」的可读文案。
+
+        原先 TG 推送里的「来源」直接打印内部轮次标识（new / new_fallback /
+        retry / retry_fallback），对用户没有信息量；真实来源其实就在同一条记录的
+        resource_source_id 前缀（tg-index / pansou / juying / hdhive）或资源链接域名里。
+        """
+        parts: list[str] = []
+        sid = str(source_id or "").strip()
+        sid_lower = sid.lower()
+        if sid_lower.startswith("tg-index"):
+            seg = [s for s in sid.split("-") if s]
+            channel = seg[2] if len(seg) > 2 else ""
+            parts.append("TG 频道索引" + (f" {channel}" if channel else ""))
+        elif sid_lower.startswith("tg"):
+            parts.append("TG 频道")
+        elif sid_lower.startswith("pansou"):
+            parts.append("Pansou 盘搜")
+        elif sid_lower.startswith("juying"):
+            parts.append("聚影")
+        elif sid_lower.startswith("hdhive"):
+            parts.append("HDHive")
+
+        url = str(resource_url or "").strip().lower()
+        if not parts:
+            if "hdhive.com" in url:
+                parts.append("HDHive")
+            elif "t.me" in url:
+                parts.append("TG 频道")
+        if "115.com" in url or "115cdn" in url or "anxia.com" in url:
+            parts.append("115 分享")
+        elif url.startswith("ed2k:"):
+            parts.append("ED2K 离线")
+        elif url.startswith("magnet:"):
+            parts.append("磁力离线")
+
+        label = SubscriptionService._SOURCE_ROUND_LABELS.get(
+            str(source or "").strip(), str(source or "").strip()
+        )
+        if label:
+            parts.append(label)
+        seen: list[str] = []
+        for part in parts:
+            if part and part not in seen:
+                seen.append(part)
+        return " · ".join(seen) or str(source or "")
 
     @staticmethod
     def _split_share_link_and_receive_code(raw_link: str) -> tuple[str, str]:
