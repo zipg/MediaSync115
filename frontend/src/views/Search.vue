@@ -39,7 +39,7 @@
           @configured="handleTmdbConfigured"
         />
 
-        <template v-else-if="exploreSections.length > 0">
+        <template v-else-if="exploreSections.length > 0 && exploreSectionsSource === exploreSource">
           <ExploreSectionRow
             v-for="section in exploreSections"
             :key="`${exploreSource}:${section.key}`"
@@ -64,7 +64,7 @@
           />
         </template>
 
-        <template v-else-if="exploreLoading && tmdbConfigured">
+        <template v-else-if="(exploreLoading || exploreSections.length > 0) && tmdbConfigured">
           <div class="explore-skeleton">
             <div
               v-for="n in EXPLORE_SKELETON_SECTION_COUNT"
@@ -312,6 +312,9 @@ const tmdbConfigured = ref(true)
 const exploreSections = shallowRef([])
 const exploreUseLazySections = ref(false)
 let exploreSectionsRequestId = 0
+// 当前 exploreSections 属于哪个源：模板只在它等于当前路由源时才渲染，
+// 避免切源瞬间/迟到响应把上一个源的榜单显示在当前源页面上
+const exploreSectionsSource = ref('')
 const exploreContainerRef = ref(null)
 const sectionRowRefs = ref({})
 const sectionScrollStates = ref({})
@@ -1356,6 +1359,7 @@ const fetchExploreSections = async () => {
     const snapshot = readExploreSnapshot(source)
     if (snapshot) {
       exploreSections.value = normalizeExploreSections(snapshot.sections)
+      exploreSectionsSource.value = source
       exploreSectionsFromSnapshot.value = true
     }
   }
@@ -1377,6 +1381,7 @@ const fetchExploreSections = async () => {
       if (hasUnconfigured && !sourceSections.length) {
         tmdbConfigured.value = false
         exploreSections.value = []
+        exploreSectionsSource.value = ''
         return
       }
       tmdbConfigured.value = true
@@ -1393,6 +1398,7 @@ const fetchExploreSections = async () => {
     }
 
     exploreSections.value = normalizeExploreSections(sourceSections)
+    exploreSectionsSource.value = source
     exploreSectionsFromSnapshot.value = false
     writeExploreSnapshot(source, sourceSections)
     if (data?.cache?.stale) {
@@ -1411,6 +1417,7 @@ const fetchExploreSections = async () => {
       if (detail.includes('TMDB API Key 未配置') || detail.includes('TMDB_API_KEY')) {
         tmdbConfigured.value = false
         exploreSections.value = []
+        exploreSectionsSource.value = ''
         return
       }
     }
@@ -1447,6 +1454,7 @@ const loadExploreSectionsFromMeta = async (source) => {
     } else {
       tmdbConfigured.value = true
     }
+    if (source !== exploreSource.value) return false   // 迟到的 meta 响应不要写进来
     exploreUseLazySections.value = true
     exploreSections.value = rows.map((section) => ({
       key: section.key,
@@ -1455,6 +1463,7 @@ const loadExploreSectionsFromMeta = async (source) => {
       total: 0,
       items: []
     }))
+    exploreSectionsSource.value = source
     return true
   } catch (metaError) {
     console.error('Failed to load explore meta fallback:', metaError)
@@ -2042,6 +2051,7 @@ const cleanupSectionResizeObserver = () => {
 
 const resetExploreState = () => {
   exploreSections.value = []
+  exploreSectionsSource.value = ''
   exploreUseLazySections.value = false
 }
 
@@ -2109,7 +2119,11 @@ watch(
 watch(exploreSource, async (newSource, oldSource) => {
   if (!isSearchRouteActive()) return
   if (newSource === oldSource) return
-  exploreUseLazySections.value = false
+  // 切换数据源必须立刻清空列表：
+  // 列表非空时模板会直接渲染旧数据（且行按 source 重新挂载、仍带着旧源的 preloaded-items），
+  // 在新数据到达前就会显示上一个源的榜单和后端缓存越冷越久，看起来就是"三个页面数据串了"。
+  resetExploreState()
+  exploreSectionsFromSnapshot.value = false
   await initializeExploreHome()
 })
 
