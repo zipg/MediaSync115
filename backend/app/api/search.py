@@ -23,6 +23,7 @@ from app.services.douban_explore_service import (
     resolve_douban_explore_item,
 )
 from app.services.explore_action_queue_service import explore_action_queue_service
+from app.services.explore_cache_service import explore_page_cache
 from app.services.emby_sync_index_service import emby_sync_index_service
 from app.services.feiniu_sync_index_service import feiniu_sync_index_service
 from app.services.butailing_service import butailing_service
@@ -1718,6 +1719,7 @@ async def get_explore_douban_sections(
 
 
 @router.get("/explore/sections")
+@explore_page_cache(lambda kw: f"explore:sections:{kw.get('source')}:{kw.get('limit')}")
 async def get_explore_sections(
     source: str = Query(
         "douban", pattern=EXPLORE_SOURCE_PATTERN, description="Explore source"
@@ -1911,6 +1913,7 @@ async def get_explore_meta(
 
 
 @router.get("/explore/home")
+@explore_page_cache(lambda kw: f"explore:home:{kw.get('source')}")
 async def get_explore_home(
     source: str = Query(
         "douban", pattern=EXPLORE_SOURCE_PATTERN, description="Explore source"
@@ -2093,6 +2096,7 @@ async def get_feiniu_status_map(payload: FeiniuStatusMapRequest):
 
 
 @router.get("/explore/section/{section_key}")
+@explore_page_cache(lambda kw: f"explore:section:{kw.get('source')}:{kw.get('section_key')}:{kw.get('limit')}:{kw.get('start')}")
 async def get_explore_section(
     section_key: str,
     source: str = Query(

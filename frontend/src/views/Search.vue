@@ -1294,9 +1294,72 @@ const normalizeSearchResultItem = (item, index = 0, fallbackService = '') => {
   return normalized
 }
 
+// ── 首屏快照：把上次成功加载的榜单存 localStorage，下次打开先渲染它再更新 ──
+const EXPLORE_SNAPSHOT_PREFIX = 'mediasync:explore-snapshot:'
+const EXPLORE_SNAPSHOT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+const exploreSectionsFromSnapshot = ref(false)
+let exploreSectionsRefreshTimer = null
+
+const readExploreSnapshot = (source) => {
+  try {
+    const raw = localStorage.getItem(`${EXPLORE_SNAPSHOT_PREFIX}${source}`)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || !Array.isArray(parsed.sections) || !parsed.sections.length) return null
+    if (Date.now() - Number(parsed.savedAt || 0) > EXPLORE_SNAPSHOT_MAX_AGE_MS) return null
+    return parsed
+  } catch (error) {
+    console.warn('读取探索快照失败:', error)
+    return null
+  }
+}
+
+const writeExploreSnapshot = (source, sections) => {
+  try {
+    if (!Array.isArray(sections) || !sections.length) return
+    localStorage.setItem(
+      `${EXPLORE_SNAPSHOT_PREFIX}${source}`,
+      JSON.stringify({ savedAt: Date.now(), sections })
+    )
+  } catch (error) {
+    console.warn('写入探索快照失败:', error)
+  }
+}
+
+const normalizeExploreSections = (sourceSections) =>
+  (Array.isArray(sourceSections) ? sourceSections : [])
+    .filter((section) => section && typeof section === 'object')
+    .map((section) => {
+      const items = Array.isArray(section.items) ? section.items : []
+      return {
+        ...section,
+        total: Number(section.total) || items.length,
+        items
+      }
+    })
+
+// 后端返回 cache.stale=true 时说明给的是旧数据并在后台刷新，这里稍后自动再拉一次
+const scheduleExploreSectionsRefresh = () => {
+  if (exploreSectionsRefreshTimer) return
+  exploreSectionsRefreshTimer = setTimeout(() => {
+    exploreSectionsRefreshTimer = null
+    fetchExploreSections()
+  }, 4000)
+}
+
 const fetchExploreSections = async () => {
   const requestId = ++exploreSectionsRequestId
   const source = exploreSource.value
+
+  // 先用手上的缓存秒出内容（不存在才显示骨架），避免每次打开都是空白加载
+  if (!exploreSections.value.length) {
+    const snapshot = readExploreSnapshot(source)
+    if (snapshot) {
+      exploreSections.value = normalizeExploreSections(snapshot.sections)
+      exploreSectionsFromSnapshot.value = true
+    }
+  }
+
   exploreLoading.value = exploreSections.value.length === 0
   exploreUseLazySections.value = false
   try {
@@ -1329,17 +1392,20 @@ const fetchExploreSections = async () => {
       ElMessage.warning('豆瓣榜单暂不可用，已展示备用榜单。请检查设置中的代理地址/端口是否正确。')
     }
 
-    exploreSections.value = sourceSections.map((section) => {
-      const items = Array.isArray(section?.items) ? section.items : []
-      return {
-        ...section,
-        total: Number(section.total) || items.length,
-        items
-      }
-    })
+    exploreSections.value = normalizeExploreSections(sourceSections)
+    exploreSectionsFromSnapshot.value = false
+    writeExploreSnapshot(source, sourceSections)
+    if (data?.cache?.stale) {
+      scheduleExploreSectionsRefresh()
+    }
     scheduleLibraryBadgeSync()
   } catch (error) {
     if (requestId !== exploreSectionsRequestId || source !== exploreSource.value) return
+    if (exploreSections.value.length) {
+      // 已经有内容（多数来自首屏快照）：静默保留，别把用户打回空白
+      console.warn('探索榜单刷新失败，继续展示缓存内容:', error)
+      return
+    }
     if (source === 'tmdb') {
       const detail = String(error?.response?.data?.detail || error?.message || '')
       if (detail.includes('TMDB API Key 未配置') || detail.includes('TMDB_API_KEY')) {
@@ -2048,6 +2114,11 @@ watch(exploreSource, async (newSource, oldSource) => {
 })
 
 onBeforeUnmount(() => {
+  if (exploreSectionsRefreshTimer) {
+    clearTimeout(exploreSectionsRefreshTimer)
+    exploreSectionsRefreshTimer = null
+  }
+
   cleanupExploreContainerResizeObserver()
   cleanupSectionResizeObserver()
   stopExploreQueuePolling()
